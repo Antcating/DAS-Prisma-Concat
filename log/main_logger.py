@@ -1,6 +1,6 @@
 import logging
 import os
-from config import SAVE_PATH, config_dict
+from config import OUTPUT_PATH, config_dict
 
 # Create formatter
 formatter = logging.Formatter(
@@ -18,7 +18,7 @@ logger = logging.getLogger(__name__)
 logger.setLevel(LOG_LEVEL)
 
 # Create file handler
-file_handler = logging.FileHandler(os.path.join(SAVE_PATH, "log"))
+file_handler = logging.FileHandler(os.path.join(OUTPUT_PATH, "log"))
 file_handler.setLevel(LOG_LEVEL)
 
 # Set formats and add the handlers to the logger
