@@ -1,7 +1,5 @@
 import h5py
 import numpy as np
-from obspy import read
-from obspy.core import Stats
 
 import datetime
 import json
@@ -23,138 +21,155 @@ class PrismaConcatenator:
         self.space_down_factor = None
         self.time_down_factor = None
 
-    def str2arr(self, data, min_max_R_ind):
-        """Converts data from obspy stream to numpy array"""
-        return np.array(
-            [
-                data[i].data
-                for i in np.arange(
-                    min_max_R_ind[0], min_max_R_ind[1], self.space_down_factor
-                )
-            ]
-        )
+        self.phase = None
+        self.phase_offset = 0
 
-    def concat_arrays(self, array_from: np.ndarray, array_to: np.ndarray) -> np.ndarray:
+        self.data_down = None
+
+    def concat_arrays(self, min_max_R_ind) -> np.ndarray:
         """Resizes and resizes h5py Dataset according to another h5py Dataset
 
         Args:
-            dset_concat_from (Dataset): Donor Numpy array
-            dset_concat_to (Dataset): Numpy array to be resized and appended to
+            array_from (np.ndarray): Donor Numpy array
+            array_to (np.ndarray): Numpy array to be resized and appended to
 
         Returns:
-            Dataset: Resized and appended dataset
+            np.ndarray: Resized and appended array
         """
-        if array_from.shape[0] == 0:
-            return array_to
-        try:
-            array_to.resize(
-                array_to.shape[0],
-                array_to.shape[1] + array_from.shape[1],
-                refcheck=False,
+        if self.phase is None:
+            self.phase = np.empty(
+                (min_max_R_ind[1] - min_max_R_ind[0], int(CHUNK_SIZE * PRR)),
+                dtype=np.dtype("f4"),
             )
-            # Appending transposed data to the end of the Dataset
-            # (Mekorot and Natgas datasets are transposed)
-            array_to[:, -array_from.shape[1] :] = array_from[()]
-            log.info(f"Concat successful, resulting dataset: {array_to.shape}")
-            return array_to
-        except Exception as err:
-            log.error(f"Critical error while saving last chunk: {err}")
+
+        # write data from array_from to array_to on the offset self.phase_offset
+        self.phase[
+            :, self.phase_offset : self.phase_offset + self.data.shape[1]
+        ] = self.data
+        self.phase_offset += self.data.shape[1]
 
     def read_Prisma_segy(
         self,
         files_sorted,
         min_max_R_ind=None,
     ):
-        stats_first: Stats
-        stats_last: Stats
-        phase: np.ndarray
+        dtype = "f4"
+
         distance_event: np.ndarray
         time_event: np.ndarray
 
         last_endtime = None
 
+        segy_trc_size = None
+        segy_trc_sample_rate = None
+
         for file_index, file in enumerate(files_sorted):
-            log.debug("before reading", datetime.datetime.now())
+            log.debug("before reading")
+            file_path = os.path.join(self.parent_input_dir, self.working_dir_r, file)
             log.info(f"Reading {file}")
-            data = read(os.path.join(self.parent_input_dir, self.working_dir_r, file))
-            log.debug("after reading", datetime.datetime.now())
+            if not segy_trc_size or not segy_trc_sample_rate:
+                # read bytes 3714-3715 from segy file to get trace size
+                # read bytes 3716-3717 from segy file to get sample rate
+                with open(file_path, "rb") as f:
+                    f.seek(3714)
+                    segy_trc_size, segy_trc_sample_rate = np.frombuffer(
+                        f.read(4), dtype=np.int16
+                    )
+                    sampling_rate = (
+                        1e6 / segy_trc_sample_rate
+                    )  # convert from microseconds to seconds
+            mmap_dtype = np.dtype(
+                [("headers", np.void, 240), ("data", dtype, segy_trc_size)]
+            )
+            segy_data = np.memmap(file_path, dtype=mmap_dtype, mode="r", offset=3600)
+            data = segy_data["data"]
+
+            start_time = datetime.datetime.strptime(
+                file.rstrip(".segy"), "%Y-%m-%dT%H-%M-%S-%f"
+            )
+            end_time = start_time + datetime.timedelta(
+                seconds=(segy_trc_size - 1) / sampling_rate
+            )
+            # data = read(os.path.join(self.parent_input_dir, self.working_dir_r, file))
+            log.debug("after reading")
 
             if min_max_R_ind is None:
                 min_max_R_ind = (0, len(data))
 
-            stats = data[0].stats
-
-            if file_index == 0:
-                stats_first = stats
-                last_endtime = stats.endtime
-
-            if last_endtime is not None and (stats.starttime - last_endtime) > 1:
-                log.warning(f"Gap in data: {stats.starttime - last_endtime} seconds")
+            if last_endtime is not None and (start_time - last_endtime).seconds > 1:
+                log.warning(f"Gap in data: {start_time - last_endtime} seconds")
                 break
-
-            log.debug(f"stats: {stats}")
-            log.debug("before processing", datetime.datetime.now())
-            phase_processing: np.ndarray = self.str2arr(data, min_max_R_ind)
+            log.debug("before processing")
+            # phase_processing: np.ndarray = self.str2arr(data, min_max_R_ind)
 
             if self.time_down_factor != 1:
                 # downsample in time
-                phase_processing = phase_processing.reshape(
-                    phase_processing.shape[0], -1, self.time_down_factor
-                ).mean(axis=-1)
+                data = data.reshape(data.shape[0], -1, self.time_down_factor)
+                if self.data_down is None or self.data_down.shape != data.shape[:2]:
+                    self.data_down = np.empty(
+                        (data.shape[0], data.shape[1]),
+                        dtype=np.dtype("f4"),
+                    )
+                self.data = data.mean(
+                    axis=-1,
+                )
 
-            phase = (
-                phase_processing
-                if file == files_sorted[0]
-                else self.concat_arrays(phase_processing, phase)
-            )
-            last_endtime = stats.endtime
-            log.debug(phase.shape)
-            log.debug("after processing", datetime.datetime.now())
-            if CHUNK_SIZE - (phase.shape[1] / PRR) < UNIT_SIZE:
+            self.concat_arrays(min_max_R_ind)
+
+            last_endtime = end_time
+            log.debug(self.phase.shape)
+            log.debug("after processing")
+
+            if CHUNK_SIZE - (self.phase_offset / PRR) < UNIT_SIZE:
                 log.info("Chunk size reached")
                 break
-
-        stats_last = stats
-        packet_PRR = stats.sampling_rate
+            elif self.phase_offset / PRR > CHUNK_SIZE:
+                log.warning("Chunk size exceeded")
+                break
+            
+        packet_PRR = sampling_rate
         packet_PRR_down = packet_PRR / self.time_down_factor
         packet_DX_down = self.dx * self.space_down_factor  # m
         distance_event: np.ndarray = (
-            np.arange(0, phase.shape[0] * packet_DX_down / 1000, packet_DX_down / 1000)
+            np.arange(
+                0, self.phase.shape[0] * packet_DX_down / 1000, packet_DX_down / 1000
+            )
             + min_max_R_ind[0] * self.dx / 1000
         )
         time_event: np.ndarray = np.arange(
-            0, phase.shape[1] / packet_PRR_down, 1.0 / packet_PRR_down
+            0, self.phase.shape[1] / packet_PRR_down, 1.0 / packet_PRR_down
         )
         log.info(f"Sample rate from {packet_PRR}Hz to {packet_PRR_down}Hz")
         log.info(f"Dx from {self.dx}m to {packet_DX_down}m")
-
         del data
         return (
             files_sorted[file_index + 1 :],
-            phase,
-            stats_first,
-            stats_last,
+            start_time,
+            end_time,
             distance_event,
             time_event,
         )
 
-    def save_data(self, phase, distance_event, time_event, stats_first, stats_last):
-        data_start_date = stats_first.starttime.strftime("%Y%m%d")
+    def save_data(self, distance_event, time_event, start_time, end_time):
+        data_start_date = start_time.strftime("%Y%m%d")
         if not os.path.exists(os.path.join(self.parent_output_dir, data_start_date)):
             os.mkdir(os.path.join(self.parent_output_dir, data_start_date))
         h5_concat = os.path.join(
             self.parent_output_dir,
             data_start_date,
-            f"{stats_first.starttime}_to_{stats_last.endtime}.hdf5",
+            f"{start_time}_to_{end_time}.hdf5",
         ).replace(":", "_")
 
         # save data to hdf5 file
         with h5py.File(h5_concat, "w") as f:
-            f.create_dataset("phase_down", data=phase)
+            f.create_dataset("phase_down", data=self.phase[:, : self.phase_offset])
             f.create_dataset("distance_event", data=distance_event)
             f.create_dataset("time_event", data=time_event)
+        self.phase_offset = 0
         # save attrs to json file
-        with open(os.path.join(self.parent_output_dir, data_start_date, "attrs.json"), "w") as f:
+        with open(
+            os.path.join(self.parent_output_dir, data_start_date, "attrs.json"), "w"
+        ) as f:
             json.dump(
                 {
                     "DX": self.dx,
@@ -165,23 +180,9 @@ class PrismaConcatenator:
                 },
                 f,
             )
-        # save last chunk last time to txt
-        with open(os.path.join(self.parent_output_dir, "last_start_time"), "w") as f:
-            f.write(str(stats_last.starttime))
-
-    def read_last_chunk(self):
-        last_chunk_file = os.path.join(self.parent_output_dir, "last_start_time")
-
-        if os.path.exists(last_chunk_file):
-            with open(last_chunk_file, "r") as f:
-                last_start_time = f.read()
-                last_start_datetime = datetime.datetime.strptime(
-                    last_start_time, "%Y-%m-%dT%H:%M:%S.%fZ"
-                )
-
-            return last_start_datetime
 
     def process_dir(self, working_dir_r):
+        log.info(f"Processing {working_dir_r}")
         self.working_dir_r = working_dir_r
         # Iterate to find the working directory with SEGY files
         working_dir_list = os.listdir(
@@ -192,7 +193,7 @@ class PrismaConcatenator:
             working_dir_list = os.listdir(
                 os.path.join(self.parent_input_dir, self.working_dir_r)
             )
-
+        log.debug(f"Working directory: {self.working_dir_r}")
         json_file = [f for f in working_dir_list if f.endswith(".json")][0]
 
         ## read file ##
@@ -210,6 +211,7 @@ class PrismaConcatenator:
         ## sort files by time ##
         sort_indeces = np.argsort(file_times)
         files_sorted = [files[i] for i in sort_indeces]
+        log.debug(f"Num files sorted: {len(files_sorted)}")
         ## read metadata ##
         meta_file = open(
             os.path.join(self.parent_input_dir, self.working_dir_r, json_file)
@@ -231,39 +233,68 @@ class PrismaConcatenator:
         else:
             self.space_down_factor = 1
 
-        # read last chunk time
-        last_start_datetime = self.read_last_chunk()
-        if last_start_datetime is not None:
-            files_sorted = [
-                f
-                for f in files_sorted
-                if datetime.datetime.strptime(f.rstrip(".segy"), "%Y-%m-%dT%H-%M-%S-%f")
-                > last_start_datetime + datetime.timedelta(seconds=1)
-            ]
+        # if last_start_datetime is not None:
+        #     files_sorted = [
+        #         f
+        #         for f in files_sorted
+        #         if datetime.datetime.strptime(f.rstrip(".segy"), "%Y-%m-%dT%H-%M-%S-%f")
+        #         > last_start_datetime + datetime.timedelta(seconds=1)
+        #     ]
 
         min_max_R_ind = None
-
         while len(files_sorted) > 0:
-            start_time = datetime.datetime.now()
+            run_start_time = datetime.datetime.now()
             (
                 files_sorted,
-                phase,
-                stats_first,
-                stats_last,
+                start_time,
+                end_time,
                 distance_event,
                 time_event,
             ) = self.read_Prisma_segy(files_sorted, min_max_R_ind)
             log.info(
                 "read from segy chunk in %s seconds"
-                % (datetime.datetime.now() - start_time).total_seconds()
+                % (datetime.datetime.now() - run_start_time).total_seconds()
             )
 
             self.save_data(
-                phase, distance_event, time_event, stats_first, stats_last
+                distance_event, time_event, start_time, end_time
             )  # save data to hdf5 file
-            del phase, distance_event, time_event, stats_first, stats_last
+            del distance_event, time_event, start_time, end_time
 
     def run(self):
+        log.info("Starting concatenation")
         dirs: list[str] = os.listdir(self.parent_input_dir)
+        # remove already processed dirs
+        if os.path.exists(os.path.join(self.parent_output_dir, "processed_dirs.txt")):
+            with open(
+                os.path.join(self.parent_output_dir, "processed_dirs.txt"), "r"
+            ) as f:
+                processed_dirs = [x.strip() for x in f.readlines()]
+                log.info(
+                    "Dirs already processed:" + " ".join([x[:5] + "..." for x in processed_dirs])
+                )
+            dirs = [d for d in dirs if d not in processed_dirs]
+        # if directory last modified less than 1 day ago, skip it
+        dirs = [
+            d
+            for d in dirs
+            if (
+                datetime.datetime.now()
+                - datetime.datetime.fromtimestamp(
+                    os.path.getmtime(os.path.join(self.parent_input_dir, d))
+                )
+            ).days
+            > 1
+        ]
+        log.info("Skipped dirs modified less than 1 day ago")
+
         for working_dir_r in dirs:
+            log.info("Processing dir", working_dir_r)
             self.process_dir(working_dir_r)
+            log.info("after processing dir", working_dir_r)
+            # save processed dirs
+            with open(
+                os.path.join(self.parent_output_dir, "processed_dirs.txt"), "a"
+            ) as f:
+                f.write(working_dir_r + "\n")
+        log.info("Concatenation finished")
