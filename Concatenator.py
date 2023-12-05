@@ -30,14 +30,14 @@ class PrismaConcatenator:
             Concatenates the data array to the phase array.
         read_Prisma_segy(files_sorted, min_max_R_ind=None) -> tuple:
             Reads Prisma SEGY files and returns the necessary data.
-        save_data(distance_event, time_event, start_time, end_time):
+        save_data(distance_event, time_event, start_time):
             Save data to HDF5 and JSON files.
         process_dir(working_dir_r):
             Process the specified working directory.
         run():
             Runs the concatenation process.
     """
-    
+
     def __init__(self, raw_data_dir, target_folder):
         self.parent_input_dir = raw_data_dir
         self.parent_output_dir = target_folder
@@ -163,6 +163,7 @@ class PrismaConcatenator:
 
             last_endtime = end_time
             log.debug(self.phase.shape)
+            log.debug(self.phase_offset)
             log.debug("after processing")
 
             if CHUNK_SIZE - (self.phase_offset / PRR) < UNIT_SIZE:
@@ -195,7 +196,7 @@ class PrismaConcatenator:
             time_event,
         )
 
-    def save_data(self, distance_event, time_event, start_time, end_time):
+    def save_data(self, distance_event, time_event, start_time):
         """
         Save data to HDF5 and JSON files.
 
@@ -211,7 +212,7 @@ class PrismaConcatenator:
         h5_concat = os.path.join(
             self.parent_output_dir,
             data_start_date,
-            f"{start_time}_to_{end_time}.hdf5",
+            f"{start_time.strftime('%Y%m%d_%H%M%S')}.hdf5",
         ).replace(":", "_")
 
         # save data to hdf5 file
@@ -273,16 +274,16 @@ class PrismaConcatenator:
 
         ## sort files by time ##
         sort_indeces = np.argsort(file_times)
-        files_sorted = [files[i] for i in sort_indeces]
+        files_sorted = sorted(files)
         log.debug(f"Num files sorted: {len(files_sorted)}")
         ## read metadata ##
-        meta_file = open(
+        with open(
             os.path.join(self.parent_input_dir, self.working_dir_r, json_file)
-        )
-        meta = json.load(meta_file)
-        self.dx = meta["dx"]
-        self.gauge_m = meta["gaugeLengthMeters"]
-        self.prr = meta["prr"]
+        ) as meta_file:
+            meta = json.load(meta_file)
+            self.dx = meta["dx"]
+            self.gauge_m = meta["gaugeLengthMeters"]
+            self.prr = meta["prr"]
 
         ## define downsampling factor ##
         # Time downsample factor
@@ -312,7 +313,7 @@ class PrismaConcatenator:
             )
 
             self.save_data(
-                distance_event, time_event, start_time, end_time
+                distance_event, time_event, start_time
             )  # save data to hdf5 file
             del distance_event, time_event, start_time, end_time
 
@@ -351,14 +352,14 @@ class PrismaConcatenator:
                     os.path.getmtime(os.path.join(self.parent_input_dir, d))
                 )
             ).days
-            > 1
+            >= 1
         ]
         log.info("Skipped dirs modified less than 1 day ago")
 
         for working_dir_r in dirs:
-            log.info("Processing dir", working_dir_r)
+            log.info("Processing dir: " + working_dir_r)
             self.process_dir(working_dir_r)
-            log.info("after processing dir", working_dir_r)
+            log.info("after processing dir: " + working_dir_r)
             # save processed dirs
             with open(
                 os.path.join(self.parent_output_dir, "processed_dirs.txt"), "a"
