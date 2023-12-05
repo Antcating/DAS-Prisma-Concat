@@ -111,8 +111,9 @@ class PrismaConcatenator:
             file_path = os.path.join(self.parent_input_dir, self.working_dir_r, file)
             log.info(f"Reading {file}")
             if not segy_trc_size or not segy_trc_sample_rate:
-                # read bytes 3714-3715 from segy file to get trace size
-                # read bytes 3716-3717 from segy file to get sample rate
+                # read bytes (offset 3600) 3714-3715 from segy file to get trace size
+                # read bytes (offset 3600) 3716-3717 from segy file to get sample rate
+                # https://www.igw.uni-jena.de/igwmedia/geophysik/pdf/seg-y-trace-header-format.pdf
                 with open(file_path, "rb") as f:
                     f.seek(3714)
                     segy_trc_size, segy_trc_sample_rate = np.frombuffer(
