@@ -10,6 +10,34 @@ from log.main_logger import logger as log
 
 
 class PrismaConcatenator:
+    """
+    A class for concatenating Prisma SEGY files.
+
+    Attributes:
+        parent_input_dir (str): The parent input directory.
+        parent_output_dir (str): The parent output directory.
+        dx (float): The distance increment.
+        gauge_m (float): The gauge length in meters.
+        prr (float): The pulse repetition rate.
+        space_down_factor (int): The space downsample factor.
+        time_down_factor (int): The time downsample factor.
+        phase (np.ndarray): The phase array.
+        phase_offset (int): The phase offset.
+        data_down (np.ndarray): The downsampled data array.
+
+    Methods:
+        concat_arrays(min_max_R_ind) -> np.ndarray:
+            Concatenates the data array to the phase array.
+        read_Prisma_segy(files_sorted, min_max_R_ind=None) -> tuple:
+            Reads Prisma SEGY files and returns the necessary data.
+        save_data(distance_event, time_event, start_time, end_time):
+            Save data to HDF5 and JSON files.
+        process_dir(working_dir_r):
+            Process the specified working directory.
+        run():
+            Runs the concatenation process.
+    """
+    
     def __init__(self, raw_data_dir, target_folder):
         self.parent_input_dir = raw_data_dir
         self.parent_output_dir = target_folder
@@ -27,14 +55,14 @@ class PrismaConcatenator:
         self.data_down = None
 
     def concat_arrays(self, min_max_R_ind) -> np.ndarray:
-        """Resizes and resizes h5py Dataset according to another h5py Dataset
+        """
+        Concatenates the data array to the phase array.
 
         Args:
-            array_from (np.ndarray): Donor Numpy array
-            array_to (np.ndarray): Numpy array to be resized and appended to
+            min_max_R_ind (tuple): A tuple containing the minimum and maximum indices.
 
         Returns:
-            np.ndarray: Resized and appended array
+            np.ndarray: The concatenated phase array.
         """
         if self.phase is None:
             self.phase = np.empty(
@@ -53,6 +81,21 @@ class PrismaConcatenator:
         files_sorted,
         min_max_R_ind=None,
     ):
+        """
+        Reads Prisma SEGY files and returns the necessary data.
+
+        Args:
+            files_sorted (list): A list of sorted SEGY file names.
+            min_max_R_ind (tuple, optional): A tuple representing the minimum and maximum R index. Defaults to None.
+
+        Returns:
+            tuple: A tuple containing the following elements:
+                - A list of remaining file names after processing.
+                - The start time of the last processed file.
+                - The end time of the last processed file.
+                - An array representing the distance event.
+                - An array representing the time event.
+        """
         dtype = "f4"
 
         distance_event: np.ndarray
@@ -126,7 +169,7 @@ class PrismaConcatenator:
             elif self.phase_offset / PRR > CHUNK_SIZE:
                 log.warning("Chunk size exceeded")
                 break
-            
+
         packet_PRR = sampling_rate
         packet_PRR_down = packet_PRR / self.time_down_factor
         packet_DX_down = self.dx * self.space_down_factor  # m
@@ -151,6 +194,15 @@ class PrismaConcatenator:
         )
 
     def save_data(self, distance_event, time_event, start_time, end_time):
+        """
+        Save data to HDF5 and JSON files.
+
+        Args:
+            distance_event (numpy.ndarray): Array of distance events.
+            time_event (numpy.ndarray): Array of time events.
+            start_time (datetime.datetime): Start time of the data.
+            end_time (datetime.datetime): End time of the data.
+        """
         data_start_date = start_time.strftime("%Y%m%d")
         if not os.path.exists(os.path.join(self.parent_output_dir, data_start_date)):
             os.mkdir(os.path.join(self.parent_output_dir, data_start_date))
@@ -182,6 +234,15 @@ class PrismaConcatenator:
             )
 
     def process_dir(self, working_dir_r):
+        """
+        Process the specified working directory.
+
+        Args:
+            working_dir_r (str): The relative path of the working directory.
+
+        Returns:
+            None
+        """
         log.info(f"Processing {working_dir_r}")
         self.working_dir_r = working_dir_r
         # Iterate to find the working directory with SEGY files
@@ -233,14 +294,6 @@ class PrismaConcatenator:
         else:
             self.space_down_factor = 1
 
-        # if last_start_datetime is not None:
-        #     files_sorted = [
-        #         f
-        #         for f in files_sorted
-        #         if datetime.datetime.strptime(f.rstrip(".segy"), "%Y-%m-%dT%H-%M-%S-%f")
-        #         > last_start_datetime + datetime.timedelta(seconds=1)
-        #     ]
-
         min_max_R_ind = None
         while len(files_sorted) > 0:
             run_start_time = datetime.datetime.now()
@@ -262,6 +315,17 @@ class PrismaConcatenator:
             del distance_event, time_event, start_time, end_time
 
     def run(self):
+        """
+        Runs the concatenation process.
+
+        This method performs the concatenation process by iterating over the directories,
+        skipping already processed directories and directories modified less than 1 day ago.
+        It calls the `process_dir` method for each working directory and saves the processed
+        directories in a file.
+
+        Returns:
+            None
+        """
         log.info("Starting concatenation")
         dirs: list[str] = os.listdir(self.parent_input_dir)
         # remove already processed dirs
@@ -271,7 +335,8 @@ class PrismaConcatenator:
             ) as f:
                 processed_dirs = [x.strip() for x in f.readlines()]
                 log.info(
-                    "Dirs already processed:" + " ".join([x[:5] + "..." for x in processed_dirs])
+                    "Dirs already processed:"
+                    + " ".join([x[:5] + "..." for x in processed_dirs])
                 )
             dirs = [d for d in dirs if d not in processed_dirs]
         # if directory last modified less than 1 day ago, skip it
