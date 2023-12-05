@@ -18,6 +18,8 @@
       - [Configure systemd service](#configure-systemd-service)
       - [Configure systemd timer](#configure-systemd-timer)
       - [Activating timer](#activating-timer)
+  - [Documentation ](#documentation-)
+    - [Usage of np.memmap](#usage-of-npmemmap)
 
 
 ## About <a name = "about"></a>
@@ -175,3 +177,15 @@ systemctl list-timers
 ```
 
 Among listed timers you would be able to see `PrismaConcatDaily.timer`, which activates `PrismaConcatDaily.service`
+## Documentation <a name = "documentation"></a>
+
+### Usage of np.memmap
+
+The `np.memmap` function is used in this project to speed up the processing of SEGY files. SEGY files are commonly used in geophysical data processing and contain seismic data in a specific format.
+
+To utilize `np.memmap`, the header map is taken from the [SEG-Y Trace Header Format](https://www.igw.uni-jena.de/igwmedia/geophysik/pdf/seg-y-trace-header-format.pdf). This header map provides information about the structure and layout of the SEGY file.
+
+Additionally, the body size of the SEGY file is calculated from the file itself. This allows for efficient memory mapping and processing of the seismic data.
+
+By using `np.memmap`, the project benefits from improved performance and reduced memory usage when working with large SEGY files.
+
