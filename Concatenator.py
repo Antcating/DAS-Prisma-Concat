@@ -271,8 +271,12 @@ class PrismaConcatenator:
         ]
         file_times = []
         for f in files:
+            file_time_str = f.rstrip(".segy")
+            if file_time_str.endswith("Z"):
+                file_time_str = file_time_str[:-1]
             file_times.append(
-                datetime.datetime.strptime(f.rstrip(".segy"), "%Y-%m-%dT%H-%M-%S-%f")
+                
+                datetime.datetime.strptime(file_time_str, "%Y-%m-%dT%H-%M-%S-%f")
             )
 
         ## sort files by time ##
