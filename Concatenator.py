@@ -129,9 +129,12 @@ class PrismaConcatenator:
             )
             segy_data = np.memmap(file_path, dtype=mmap_dtype, mode="r", offset=3600)
             data = segy_data["data"]
-
+            
+            start_time_str = file.rstrip(".segy")
+            if start_time_str.endswith("Z"):
+                start_time_str = start_time_str[:-1]
             start_time = datetime.datetime.strptime(
-                file.rstrip(".segy"), "%Y-%m-%dT%H-%M-%S-%f"
+                start_time_str, "%Y-%m-%dT%H-%M-%S-%f"
             )
             end_time = start_time + datetime.timedelta(
                 seconds=(segy_trc_size - 1) / sampling_rate
@@ -211,9 +214,9 @@ class PrismaConcatenator:
             os.mkdir(os.path.join(self.parent_output_dir, data_start_date))
         h5_concat = os.path.join(
             self.parent_output_dir,
-            data_start_date,
-            f"{start_time.strftime('%Y%m%d_%H%M%S')}.hdf5",
-        ).replace(":", "_")
+            data_start_date.replace(":", "_"),
+            f"{start_time.strftime('%Y%m%d_%H%M%S')}.hdf5".replace(":", "_"),
+        )
 
         # save data to hdf5 file
         with h5py.File(h5_concat, "w") as f:
