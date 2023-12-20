@@ -354,13 +354,13 @@ class PrismaConcatenator:
         dirs = [
             d
             for d in dirs
-            # if (
-            #     datetime.datetime.now()
-            #     - datetime.datetime.fromtimestamp(
-            #         os.path.getmtime(os.path.join(self.parent_input_dir, d))
-            #     )
-            # ).days
-            # >= 2
+            if (
+                datetime.datetime.now()
+                - datetime.datetime.fromtimestamp(
+                    os.path.getmtime(os.path.join(self.parent_input_dir, d))
+                )
+            ).days
+            >= 2
         ]
         log.info("Skipped dirs modified less than 2 days ago")
 
