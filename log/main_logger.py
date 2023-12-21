@@ -1,5 +1,6 @@
 import logging
 import os
+import threading
 from config import OUTPUT_PATH, config_dict
 
 # Create formatter
@@ -51,3 +52,13 @@ if TELEGRAM_LOG == "True":
         logger.addHandler(telegram_handler)
     else:
         raise Exception("Telegram channel is not provided.")
+
+# Create a separate thread for logging
+class LoggingThread(threading.Thread):
+    def __init__(self, logger):
+        threading.Thread.__init__(self)
+        self.logger = logger
+
+# Start the logging thread
+logging_thread = LoggingThread(logger)
+logging_thread.start()
