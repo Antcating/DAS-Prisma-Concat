@@ -12,31 +12,35 @@ from log.main_logger import logger as log
 
 class PrismaConcatenator:
     """
-    A class for concatenating Prisma SEGY files.
+    Class for concatenating Prisma data arrays.
 
     Attributes:
         parent_input_dir (str): The parent input directory.
         parent_output_dir (str): The parent output directory.
-        dx (float): The distance increment.
+        df_file_data (pandas.DataFrame): The file data dataframe.
+        current_dir (str): The current directory.
+        previous_dir (str): The previous directory.
+        dx (float): The dx value.
+        previous_dx (float): The previous dx value.
         gauge_m (float): The gauge length in meters.
-        prr (float): The pulse repetition rate.
-        space_down_factor (int): The space downsample factor.
-        time_down_factor (int): The time downsample factor.
-        phase (np.ndarray): The phase array.
-        phase_offset (int): The phase offset.
-        data_down (np.ndarray): The downsampled data array.
+        previous_gauge_m (float): The previous gauge length in meters.
+        prr (float): The prr value.
+        previous_prr (float): The previous prr value.
+        channels (int): The number of channels.
+        previous_channels (int): The previous number of channels.
+        space_down_factor (float): The space downsample factor.
+        time_down_factor (float): The time downsample factor.
+        data_concat (numpy.ndarray): The concatenated data array.
+        data_concat_offset (int): The offset of the concatenated data array.
+        split_offset (int): The split offset.
+        data_carry (numpy.ndarray): The data carry array.
+        data_down (numpy.ndarray): The downsampled data array.
+        chunk_start_time (float): The start time of the chunk.
 
     Methods:
-        concat_arrays(min_max_R_ind) -> np.ndarray:
-            Concatenates the data array to the phase array.
-        read_Prisma_segy(files_sorted, min_max_R_ind=None) -> tuple:
-            Reads Prisma SEGY files and returns the necessary data.
-        save_data(distance_event, time_event, start_time):
-            Save data to HDF5 and JSON files.
-        process_dir(working_dir_r):
-            Process the specified working directory.
-        run():
-            Runs the concatenation process.
+        concat_arrays: Concatenates the data array to the phase array.
+        read_Prisma_segy: Reads Prisma SEGY files and returns the necessary data.
+        save_data: Save data to HDF5 and JSON files.
     """
 
     def __init__(self, raw_data_dir, target_folder):
@@ -182,24 +186,10 @@ class PrismaConcatenator:
                 else:
                     self.space_down_factor = 1
                 self.space_down_step = 1 / self.space_down_factor
-                # read bytes (offset 3600) 3714-3715 from segy file to get trace size
-                # read bytes (offset 3600) 3716-3717 from segy file to get sample rate
-                # source: https://www.igw.uni-jena.de/igwmedia/geophysik/pdf/seg-y-trace-header-format.pdf
-                with open(
-                    os.path.join(self.parent_input_dir, self.current_dir, row["files"]),
-                    "rb",
-                ) as f:
-                    f.seek(3714)
-                    self.segy_trc_size, self.segy_trc_sample_rate = np.frombuffer(
-                        f.read(4), dtype=np.int16
-                    )
-                    self.sampling_rate = (
-                        1e6 / self.segy_trc_sample_rate
-                    )  # convert from microseconds to seconds
                 self.mmap_dtype = np.dtype(
                     # 240 bytes for the header, then the data
                     # source: https://www.igw.uni-jena.de/igwmedia/geophysik/pdf/seg-y-trace-header-format.pdf
-                    [("headers", np.void, 240), ("data", "f4", self.segy_trc_size)]
+                    [("headers", np.void, 240), ("data", "f4", self.traces)]
                 )
                 if self.previous_channels != self.channels:
                     log.warning("Number of channels changed")
@@ -224,7 +214,7 @@ class PrismaConcatenator:
             start_time = row["timestamps"]
             start_datetime = datetime.datetime.fromtimestamp(start_time)
             end_time = start_time + round(
-                (self.segy_trc_size - 1) / self.sampling_rate, 1
+                (self.traces - 1) / self.prr, 1
             )
             end_datetime = datetime.datetime.fromtimestamp(end_time)
             unit_size = round(end_time - start_time, 0)
@@ -288,41 +278,37 @@ class PrismaConcatenator:
                 log.warning("Gap in data")
                 break
 
-        packet_PRR = self.sampling_rate
+        packet_PRR = self.prr
         packet_PRR_down = packet_PRR / self.time_down_factor
         packet_DX_down = self.dx * self.space_down_factor  # m
 
         log.info(f"Sample rate from {packet_PRR}Hz to {packet_PRR_down}Hz")
         log.info(f"Dx from {self.dx}m to {packet_DX_down}m")
         del data
-        return (
-            start_time,
-            end_time,
-        )
 
     def save_data(self):
         """
-        Save data to HDF5 and JSON files.
+        Save the concatenated data to an HDF5 file and update metadata files.
 
-        Args:
-            distance_event (numpy.ndarray): Array of distance events.
-            time_event (numpy.ndarray): Array of time events.
-            start_time (datetime.datetime): Start time of the data.
-            end_time (datetime.datetime): End time of the data.
+        This method saves the concatenated data to an HDF5 file, creates necessary directories if they don't exist,
+        updates metadata files such as 'last_start' and 'attrs.json', and resets the data_concat_offset.
+
+        Returns:
+            None
         """
-        data_start_date = datetime.datetime.fromtimestamp(self.chunk_start_time)
-        date_start_str = data_start_date.strftime("%Y%m%d")
+        data_start_datetime = datetime.datetime.fromtimestamp(self.chunk_start_time)
+        date_start_date_str = data_start_datetime.strftime("%Y%m%d")
         save_path = os.path.join(
             self.parent_output_dir,
-            str(data_start_date.year),
-            date_start_str,
+            str(data_start_datetime.year),
+            date_start_date_str,
         )
         if not os.path.exists(save_path):
             os.makedirs(save_path)
 
         h5_concat = os.path.join(
             save_path,
-            f"{date_start_str}_{str(self.chunk_start_time)}.h5",
+            f"{date_start_date_str}_{str(self.chunk_start_time)}.h5",
         )
         log.info("Saving data to: " + h5_concat)
         log.debug(f"Final shape: {(self.channels, self.data_concat_offset)}")
@@ -369,7 +355,14 @@ class PrismaConcatenator:
         with open(os.path.join(self.parent_output_dir, "processed_dirs"), "a+") as f:
             f.write(processed_dir + "\n")
 
-    def read_processed_dir(self):
+    def read_processed_dirs(self) -> list[str]:
+        """
+        Reads the list of processed directories from a file and returns it.
+
+        Returns:
+            A list of processed directories.
+
+        """
         if os.path.exists(os.path.join(self.parent_output_dir, "processed_dirs")):
             with open(os.path.join(self.parent_output_dir, "processed_dirs"), "r") as f:
                 processed_dirs = [x.strip() for x in f.readlines()]
@@ -392,12 +385,12 @@ class PrismaConcatenator:
             None
         """
 
-        # If last row of file is not the same as previous dir, save it
         if os.path.exists(os.path.join(self.parent_output_dir, ".last_dir")):
             with open(os.path.join(self.parent_output_dir, ".last_dir"), "r") as f:
-                last_dir = f.read()
-                if last_dir != self.current_dir:
-                    self.save_processed_dir(last_dir)
+                last_dir_str = f.read()
+                if last_dir_str != self.current_dir:
+                    # If last row of file is not the same as current dir, save it to persistent file
+                    self.save_processed_dir(last_dir_str)
                     with open(
                         os.path.join(self.parent_output_dir, ".last_dir"), "w"
                     ) as f:
@@ -406,7 +399,7 @@ class PrismaConcatenator:
             with open(os.path.join(self.parent_output_dir, ".last_dir"), "w") as f:
                 f.write(self.current_dir)
 
-    def process_dir(self):
+    def process_files(self):
         """
         Process the specified working directory.
 
@@ -420,16 +413,12 @@ class PrismaConcatenator:
         self.index = 0
         while self.index < len(self.df_file_data):
             run_start_time = datetime.datetime.now()
-            (
-                start_time,
-                end_time,
-            ) = self.read_Prisma_segy()
+            self.read_Prisma_segy()
             log.info(
                 "read from segy chunk in %s seconds"
                 % (datetime.datetime.now() - run_start_time).total_seconds()
             )
             self.save_data()  # save data to hdf5 file
-            del start_time, end_time
 
             self.previous_dx = None
             self.previous_gauge_m = None
@@ -452,7 +441,7 @@ class PrismaConcatenator:
         log.info("Starting concatenation")
         dirs: list[str] = os.listdir(self.parent_input_dir)
         # remove already processed dirs
-        processed_dirs = self.read_processed_dir()
+        processed_dirs = self.read_processed_dirs()
         dirs = [d for d in dirs if d not in processed_dirs]
 
         # if directory last modified less than 2 day ago, skip it
@@ -523,7 +512,7 @@ class PrismaConcatenator:
         self.time_diff = np.diff(
             np.concatenate(([last_start_time], self.df_file_data["timestamps"].values))
         )
-        self.process_dir()
+        self.process_files()
         if self.current_dir is not None:
             self.save_processed_dir(self.current_dir)
         log.info("Concatenation finished")
