@@ -12,12 +12,13 @@ from log.main_logger import logger as log
 
 class PrismaConcatenator:
     """
-    Class for concatenating Prisma data arrays.
+
+        Class for concatenating Prisma data arrays.
 
     Attributes:
         parent_input_dir (str): The parent input directory.
         parent_output_dir (str): The parent output directory.
-        df_file_data (pandas.DataFrame): The file data dataframe.
+        df_file_data (pandas.DataFrame): Files names and times dataframe.
         current_dir (str): The current directory.
         previous_dir (str): The previous directory.
         dx (float): The dx value.
@@ -85,7 +86,7 @@ class PrismaConcatenator:
         """
         if self.data_concat is None:
             self.data_concat = np.empty(
-                (self.channels, int(CHUNK_SIZE * self.prr / self.time_down_factor)),
+                (self.channels, int(CHUNK_SIZE * PRR)),
                 dtype=np.dtype("f4"),
             )
         if self.data_carry is not None:
@@ -135,12 +136,14 @@ class PrismaConcatenator:
                 - An array representing the time event.
         """
 
-        for index, row in self.df_file_data[self.index :].iterrows():
+        for row_index, row in self.df_file_data[self.index :].iterrows():
             self.index += 1
             if self.chunk_start_time is None:
                 self.chunk_start_time = row["timestamps"]
             self.current_dir = row["dirs"]
+            # Expected json file name
             json_file = self.current_dir + "-info.json"
+            # If json file does not exist, get the first json file in the directory
             if not os.path.exists(
                 os.path.join(self.parent_input_dir, self.current_dir, json_file)
             ):
@@ -151,23 +154,32 @@ class PrismaConcatenator:
                     )
                     if x.endswith(".json")
                 ][0]
-            ## read metadata ##
             if self.previous_dir is None or self.previous_dir != self.current_dir:
                 log.info("Reading metadata")
                 with open(
                     os.path.join(self.parent_input_dir, self.current_dir, json_file)
-                ) as meta_file:
-                    meta = json.load(meta_file)
-                    self.dx = meta["dx"]
-                    self.gauge_m = meta["gaugeLengthMeters"]
-                    self.prr = meta["prr"]
-                    self.channels = meta["numSamplesPerTrace"]
-                    self.traces = meta["numTraces"]
+                ) as attrs_json:
+                    attrs = json.load(attrs_json)
+                    self.dx = attrs["dx"]
+                    self.gauge_m = attrs["gaugeLengthMeters"]
+                    self.prr = attrs["prr"]
+                    self.channels = attrs["numSamplesPerTrace"]
+                # read bytes (offset 3600) 3714-3715 from segy file to get trace size
 
-                ## define downsampling factor ##
+                with open(
+                    os.path.join(self.parent_input_dir, self.current_dir, row["files"]),
+                    "rb",
+                ) as f:
+                    f.seek(3714)
+                    self.traces = np.frombuffer(
+                        f.read(2), dtype=np.int16
+                    )[0]
+
                 # Time downsample factor
                 if self.previous_prr is not None and self.previous_prr != self.prr:
                     raise ValueError("PRR changed")
+                if self.prr != 1500:
+                    raise ValueError("PRR is not 1500")
                 if self.previous_dx is not None and self.previous_dx != self.dx:
                     raise ValueError("DX changed")
                 if (
@@ -193,22 +205,25 @@ class PrismaConcatenator:
                 )
                 if self.previous_channels != self.channels:
                     log.warning("Number of channels changed")
+                    if self.data_concat is not None:
+                        self.save_data()
+                        self.chunk_start_time = row["timestamps"]
                     self.data_concat = np.empty(
                         (
                             self.channels,
-                            int(CHUNK_SIZE * self.prr / self.time_down_factor),
+                            int(CHUNK_SIZE * PRR),
                         ),
                         dtype=np.dtype("f4"),
                     )
 
             log.debug("before reading")
-            file_path = os.path.join(
+            row_file_path = os.path.join(
                 self.parent_input_dir, self.current_dir, row["files"]
             )
             log.info(f"Reading {row['files']}")
 
             segy_data = np.memmap(
-                file_path, dtype=self.mmap_dtype, mode="r", offset=3600
+                row_file_path, dtype=self.mmap_dtype, mode="r", offset=3600
             )
             data = segy_data["data"]
             start_time = row["timestamps"]
@@ -217,10 +232,10 @@ class PrismaConcatenator:
                 (self.traces - 1) / self.prr, 1
             )
             end_datetime = datetime.datetime.fromtimestamp(end_time)
-            unit_size = round(end_time - start_time, 0)
+            unit_size = self.traces / self.prr
             log.debug("after reading")
             log.debug("before processing")
-
+            # It is possible to make more efficient, but LOCAL ISRAEL TIME IS NOT UTC
             if start_datetime.strftime("%d") != end_datetime.strftime("%d"):
                 log.debug("Cutting data")
                 cut_offset = (
@@ -444,19 +459,19 @@ class PrismaConcatenator:
         processed_dirs = self.read_processed_dirs()
         dirs = [d for d in dirs if d not in processed_dirs]
 
-        # if directory last modified less than 2 day ago, skip it
+        # if directory last modified less than 2 hours ago, skip it
         dirs = [
             d
             for d in dirs
-            # if (
-            #     datetime.datetime.now()
-            #     - datetime.datetime.fromtimestamp(
-            #         os.path.getmtime(os.path.join(self.parent_input_dir, d))
-            #     )
-            # ).days
-            # >= 2
+            if (
+                datetime.datetime.now()
+                - datetime.datetime.fromtimestamp(
+                    os.path.getmtime(os.path.join(self.parent_input_dir, d))
+                )
+            ).total_seconds()
+            >= 7200
         ]
-        log.info("Skipped dirs modified less than 2 days ago")
+        log.info("Skipped dirs modified less than 2 hours ago")
 
         self.df_file_data = pd.DataFrame(columns=["dirs", "files", "timestamps"])
 
@@ -470,8 +485,8 @@ class PrismaConcatenator:
                         datetime.datetime.fromtimestamp(last_start_time).strftime(
                             "%Y/%Y%m%d"
                         ),
-                        f"{datetime.datetime.fromtimestamp(last_start_time).strftime('%Y%m%d')}_{str(last_start_time)}.h5",
-                    ),
+                        f"{datetime.datetime.fromtimestamp(last_start_time).strftime('%Y%m%d')}_{str(last_start_time)}.h5"
+                    )
                 )["phase_down"][:]
                 self.chunk_start_time = last_start_time
                 self.data_concat_offset = self.data_concat.shape[1]
@@ -480,7 +495,13 @@ class PrismaConcatenator:
 
         for dir in dirs:
             files = os.listdir(os.path.join(self.parent_input_dir, dir))
-            files = [f for f in files if not f.endswith(".json")]
+            for file in files:
+                if file.endswith(".segy"):
+                    pass
+                elif file.endswith(".json"):
+                    files.remove(file)
+                else:
+                    raise ValueError("Unexpected file in directory")
             file_timestamps = []
 
             for f in files:
@@ -508,7 +529,7 @@ class PrismaConcatenator:
                 ]
             )
         self.df_file_data.sort_values(by=["timestamps"], inplace=True)
-
+        # Fix: last_start_time + offset
         self.time_diff = np.diff(
             np.concatenate(([last_start_time], self.df_file_data["timestamps"].values))
         )
