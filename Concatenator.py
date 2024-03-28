@@ -74,6 +74,8 @@ class PrismaConcatenator:
 
         self.chunk_start_time = None
 
+        self.dir_index = 0
+
     def concat_arrays(self) -> np.ndarray:
         """
         Concatenates the data array to the phase array.
@@ -109,6 +111,7 @@ class PrismaConcatenator:
         else:
             log.debug(f"Phase offset: {self.data_concat_offset}")
             log.debug(f"Split offset: {self.split_offset}")
+            log.debug(f"Shape before: {self.data_concat.shape}")
 
             self.data_concat[
                 :, self.data_concat_offset : self.data_concat_offset + self.split_offset
@@ -177,17 +180,20 @@ class PrismaConcatenator:
 
                 # Time downsample factor
                 if self.previous_prr is not None and self.previous_prr != self.prr:
+                    self.dir_index += 1
                     log.warning("PRR changed")
                     break
                 if self.prr != 1500:
-                    raise ValueError("PRR not 1500")
+                    raise ValueError("PRR is not 1500")
                 if self.previous_dx is not None and self.previous_dx != self.dx:
+                    self.dir_index += 1
                     log.warning("DX changed")
                     break
                 if (
                     self.previous_gauge_m is not None
                     and self.previous_gauge_m != self.gauge_m
                 ):
+                    self.dir_index += 1
                     log.warning("Gauge length changed")
                     break
 
@@ -206,7 +212,8 @@ class PrismaConcatenator:
                     # source: https://www.igw.uni-jena.de/igwmedia/geophysik/pdf/seg-y-trace-header-format.pdf
                     [("headers", np.void, 240), ("data", "f4", self.traces)]
                 )
-                if self.previous_channels != self.channels:
+                if self.previous_channels is not None and self.previous_channels != self.channels:
+                    self.dir_index += 1
                     log.warning("Number of channels changed")
                     if self.data_concat is not None:
                         self.save_data()
@@ -224,20 +231,33 @@ class PrismaConcatenator:
                 self.parent_input_dir, self.current_dir, row["files"]
             )
             log.info(f"Reading {row['files']}")
-
-            segy_data = np.memmap(
-                row_file_path, dtype=self.mmap_dtype, mode="r", offset=3600
-            )
+            try:
+                segy_data = np.memmap(
+                    row_file_path, dtype=self.mmap_dtype, mode="r", offset=3600
+                )
+            except ValueError:
+                log.error(f"Error reading {row['files']}")
+                break
             data = segy_data["data"]
+            if data.shape[0] != self.channels:
+                log.warning("Inside dir: Number of channels changed")
+                self.dir_index += 1
+                break
             start_time = row["timestamps"]
             start_datetime = datetime.datetime.fromtimestamp(start_time)
-            end_time = start_time + round(
-                (self.traces - 1) / self.prr, 1
-            )
+            end_time = start_time + round((self.traces - 1) / self.prr, 1)
             end_datetime = datetime.datetime.fromtimestamp(end_time)
             unit_size = self.traces / self.prr
             log.debug("after reading")
             log.debug("before processing")
+            # It is possible to make more efficient, but LOCAL ISRAEL TIME IS NOT UTC
+            if start_datetime.strftime("%d") != end_datetime.strftime("%d"):
+                self.dir_index = 0
+                log.debug("Cutting data")
+                cut_offset = (
+                    end_datetime.replace(hour=0, minute=0, second=0) - start_datetime
+                ).seconds
+                self.split_offset = int(cut_offset * PRR)
 
             if self.time_down_factor != 1:
                 # downsample in time
@@ -254,15 +274,7 @@ class PrismaConcatenator:
                 # downsample in space
                 self.data = self.data[:, :: self.space_down_step]
 
-            # It is possible to make more efficient, but LOCAL ISRAEL TIME IS NOT UTC
-            if start_datetime.strftime("%d") != end_datetime.strftime("%d"):
-                cut_offset = (
-                    end_datetime.replace(hour=0, minute=0, second=0) - start_datetime
-                ).total_seconds()
-                self.split_offset = int(cut_offset * PRR)
-                log.debug("Splitting to next day")
-
-            if CHUNK_SIZE - (self.data_concat_offset / PRR) < unit_size:
+            if CHUNK_SIZE - (self.data_concat_offset / PRR) <= unit_size:
                 # ADD SPLITTING FOR USUAL CHUNKS TO NEXT DAY
                 cut_offset = CHUNK_SIZE - (self.data_concat_offset / PRR)
                 self.split_offset = int(cut_offset * PRR)
@@ -320,7 +332,7 @@ class PrismaConcatenator:
         save_path = os.path.join(
             self.parent_output_dir,
             str(data_start_datetime.year),
-            date_start_date_str,
+            date_start_date_str + "_" + str(self.dir_index),
         )
         if not os.path.exists(save_path):
             os.makedirs(save_path)
@@ -341,9 +353,10 @@ class PrismaConcatenator:
             os.path.join(self.parent_output_dir, "last_start"),
             "w",
         ) as f:
-            f.write(str(self.chunk_start_time))
+            f.write(str(self.chunk_start_time) + "," + str(self.dir_index))
         # Save current dir to file
         self.save_last_dir()
+        self.save_last_processed_file()
 
         self.data_concat_offset = 0
         # save attrs to json file
@@ -358,6 +371,47 @@ class PrismaConcatenator:
                 },
                 f,
             )
+    
+    def save_last_processed_file(self):
+        """
+        Save last processed file to file.
+
+        Args:
+            None
+
+        Returns:
+            None
+        """
+
+        # If last row of file is not the same as previous dir, save it
+        try: 
+            with open(os.path.join(self.parent_output_dir, "processed_files"), "w") as f:
+                f.write(self.df_file_data.iloc[self.index-1]["files"])
+        except IndexError:
+            try:
+                os.remove(os.path.join(self.parent_output_dir, "processed_files"))
+            except FileNotFoundError:
+                pass
+
+    def read_last_processed_file(self):
+        """
+        Reads the last processed file from a file and returns it.
+
+        Returns:
+            The last processed file.
+
+        """
+        if os.path.exists(os.path.join(self.parent_output_dir, "processed_files")):
+            with open(os.path.join(self.parent_output_dir, "processed_files"), "r") as f:
+                processed_file = f.read()
+                log.info(
+                    "Last processed file:"
+                    + processed_file
+                )
+                return processed_file
+        else:
+            return None
+
 
     def save_processed_dir(self, processed_dir):
         """
@@ -442,6 +496,7 @@ class PrismaConcatenator:
             self.previous_dx = None
             self.previous_gauge_m = None
             self.previous_prr = None
+            self.previous_dir = None
 
             self.chunk_start_time = None
 
@@ -462,7 +517,8 @@ class PrismaConcatenator:
         # remove already processed dirs
         processed_dirs = self.read_processed_dirs()
         dirs = [d for d in dirs if d not in processed_dirs]
-
+        if "@Recycle" in dirs:
+            dirs.remove("@Recycle")
         # if directory last modified less than 2 hours ago, skip it
         dirs = [
             d
@@ -482,20 +538,55 @@ class PrismaConcatenator:
         # Read last start time
         if os.path.exists(os.path.join(self.parent_output_dir, "last_start")):
             with open(os.path.join(self.parent_output_dir, "last_start"), "r") as f:
-                last_start_time = float(f.read())
-                self.data_concat = h5py.File(
-                    os.path.join(
-                        self.parent_output_dir,
-                        datetime.datetime.fromtimestamp(last_start_time).strftime(
-                            "%Y/%Y%m%d"
-                        ),
-                        f"{datetime.datetime.fromtimestamp(last_start_time).strftime('%Y%m%d')}_{str(last_start_time)}.h5"
-                    )
-                )["phase_down"][:]
-                self.chunk_start_time = last_start_time
-                self.data_concat_offset = self.data_concat.shape[1]
+                try:
+                    last_start_time, dir_index = f.read().split(",")
+                    last_start_time = float(last_start_time)
+                    self.data = h5py.File(
+                        os.path.join(
+                            self.parent_output_dir,
+                            datetime.datetime.fromtimestamp(last_start_time).strftime(
+                                "%Y/%Y%m%d" + "_" + str(dir_index)
+                            ),
+                            f"{datetime.datetime.fromtimestamp(last_start_time).strftime('%Y%m%d')}_{str(last_start_time)}.h5",
+                        )
+                    )["phase_down"][:]
+                    self.data_concat = np.empty(
+                            (
+                                self.data.shape[0],
+                                int(CHUNK_SIZE * PRR),
+                            ),
+                            dtype=np.dtype("f4"),
+                        )
+                    print(self.data_concat.shape)
+                    self.data_concat[:, : self.data.shape[1]] = self.data
+                    # Read previous JSON
+                    with open(
+                        os.path.join(
+                            self.parent_output_dir,
+                            datetime.datetime.fromtimestamp(last_start_time).strftime(
+                                "%Y/%Y%m%d" + "_" + str(dir_index)
+                            ),
+                            "attrs.json",
+                        )
+                    ) as attrs_json:
+                        attrs = json.load(attrs_json)
+                        self.previous_dx = attrs["DX"]
+                        self.previous_gauge_m = attrs["gauge_m"]
+                        self.previous_prr = attrs["PRR"]
+
+                    self.chunk_start_time = last_start_time
+                    self.data_concat_offset = self.data.shape[1]
+                    self.previous_channels = self.data_concat.shape[0]
+                    self.dir_index = int(dir_index)
+                    log.info("Resuming concatenation from last start time")
+                    log.debug(f"Last start time: {last_start_time}")
+                    log.debug(f"Shape: {self.data.shape}")
+                except FileNotFoundError:
+                    last_start_time = 0
+                    self.dir_index = 0
         else:
             last_start_time = 0
+            self.dir_index = 0
 
         for dir in dirs:
             files = os.listdir(os.path.join(self.parent_input_dir, dir))
@@ -505,6 +596,7 @@ class PrismaConcatenator:
                 elif file.endswith(".json"):
                     files.remove(file)
                 else:
+                    log.warning(f"Unexpected file: {file}")
                     raise ValueError("Unexpected file in directory")
             file_timestamps = []
 
@@ -533,6 +625,11 @@ class PrismaConcatenator:
                 ]
             )
         self.df_file_data.sort_values(by=["timestamps"], inplace=True)
+
+        # Remove already processed files
+        last_processed_file = self.read_last_processed_file()
+        if last_processed_file is not None:
+            self.df_file_data = self.df_file_data[self.df_file_data["files"] > last_processed_file]
         # Fix: last_start_time + offset
         self.time_diff = np.diff(
             np.concatenate(([last_start_time], self.df_file_data["timestamps"].values))
