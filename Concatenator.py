@@ -174,9 +174,7 @@ class PrismaConcatenator:
                     "rb",
                 ) as f:
                     f.seek(3714)
-                    self.traces = np.frombuffer(
-                        f.read(2), dtype=np.int16
-                    )[0]
+                    self.traces = np.frombuffer(f.read(2), dtype=np.int16)[0]
 
                 # Time downsample factor
                 if self.previous_prr is not None and self.previous_prr != self.prr:
@@ -212,7 +210,10 @@ class PrismaConcatenator:
                     # source: https://www.igw.uni-jena.de/igwmedia/geophysik/pdf/seg-y-trace-header-format.pdf
                     [("headers", np.void, 240), ("data", "f4", self.traces)]
                 )
-                if self.previous_channels is not None and self.previous_channels != self.channels:
+                if (
+                    self.previous_channels is not None
+                    and self.previous_channels != self.channels
+                ):
                     self.dir_index += 1
                     log.warning("Number of channels changed")
                     if self.data_concat is not None:
@@ -371,7 +372,7 @@ class PrismaConcatenator:
                 },
                 f,
             )
-    
+
     def save_last_processed_file(self):
         """
         Save last processed file to file.
@@ -384,9 +385,11 @@ class PrismaConcatenator:
         """
 
         # If last row of file is not the same as previous dir, save it
-        try: 
-            with open(os.path.join(self.parent_output_dir, "processed_files"), "w") as f:
-                f.write(self.df_file_data.iloc[self.index-1]["files"])
+        try:
+            with open(
+                os.path.join(self.parent_output_dir, "processed_files"), "w"
+            ) as f:
+                f.write(self.df_file_data.iloc[self.index - 1]["files"])
         except IndexError:
             try:
                 os.remove(os.path.join(self.parent_output_dir, "processed_files"))
@@ -402,16 +405,14 @@ class PrismaConcatenator:
 
         """
         if os.path.exists(os.path.join(self.parent_output_dir, "processed_files")):
-            with open(os.path.join(self.parent_output_dir, "processed_files"), "r") as f:
+            with open(
+                os.path.join(self.parent_output_dir, "processed_files"), "r"
+            ) as f:
                 processed_file = f.read()
-                log.info(
-                    "Last processed file:"
-                    + processed_file
-                )
+                log.info("Last processed file:" + processed_file)
                 return processed_file
         else:
             return None
-
 
     def save_processed_dir(self, processed_dir):
         """
@@ -551,12 +552,12 @@ class PrismaConcatenator:
                         )
                     )["phase_down"][:]
                     self.data_concat = np.empty(
-                            (
-                                self.data.shape[0],
-                                int(CHUNK_SIZE * PRR),
-                            ),
-                            dtype=np.dtype("f4"),
-                        )
+                        (
+                            self.data.shape[0],
+                            int(CHUNK_SIZE * PRR),
+                        ),
+                        dtype=np.dtype("f4"),
+                    )
                     print(self.data_concat.shape)
                     self.data_concat[:, : self.data.shape[1]] = self.data
                     # Read previous JSON
@@ -629,7 +630,9 @@ class PrismaConcatenator:
         # Remove already processed files
         last_processed_file = self.read_last_processed_file()
         if last_processed_file is not None:
-            self.df_file_data = self.df_file_data[self.df_file_data["files"] > last_processed_file]
+            self.df_file_data = self.df_file_data[
+                self.df_file_data["files"] > last_processed_file
+            ]
         # Fix: last_start_time + offset
         self.time_diff = np.diff(
             np.concatenate(([last_start_time], self.df_file_data["timestamps"].values))
