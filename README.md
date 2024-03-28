@@ -1,30 +1,23 @@
-# Packet Concatenation
+# HUJI Concatenator
 
 ## Table of Contents
-
-- [Packet Concatenation](#packet-concatenation)
+- [HUJI Concatenator](#huji-concatenator)
   - [Table of Contents](#table-of-contents)
-  - [About ](#about-)
   - [Getting Started ](#getting-started-)
     - [Prerequisites](#prerequisites)
     - [Installing](#installing)
     - [Configuration](#configuration)
+      - [PATHs](#paths)
+      - [Data characteristics](#data-characteristics)
       - [Specific configuration](#specific-configuration)
+      - [LOG](#log)
+        - [Telegram](#telegram)
   - [Usage ](#usage-)
     - [Manual use](#manual-use)
       - [Using Python](#using-python)
-      - [Using bash](#using-bash)
+      - [Using bat](#using-bat)
     - [Scheduling](#scheduling)
-      - [Configure systemd service](#configure-systemd-service)
-      - [Configure systemd timer](#configure-systemd-timer)
-      - [Activating timer](#activating-timer)
-  - [Documentation ](#documentation-)
-    - [Usage of np.memmap](#usage-of-npmemmap)
-
-
-## About <a name = "about"></a>
-
-Packet concatenation combines all packets in the client's output to chunks of the specified length. Script runs once per day at specified time. 
+  - [Linux support](#linux-support)
 
 ## Getting Started <a name = "getting_started"></a>
 
@@ -32,11 +25,18 @@ To set up packet concatenation, you have to ensure that you have fresh Python in
 
 ### Prerequisites
 
-This project has scheduling scripts, which could help automate packet concatenation. The scheduling implemented using `bash` and `systemd-timers`, so it is **UNIX-systems with systemd only**.
+This project has scheduling scripts, which could help automate packet concatenation. The scheduling implemented using `bat` scripts so it is only compatible with Windows systems.
 
 ### Installing
 
 A step by step series of guide that tell you how to get a packet concatenation running.
+
+Clone source code of the project
+
+```
+git clone https://github.com/Antcating/DAS-Prisma-Concat.git
+dir DAS-Prisma-Concat
+```
 
 Create virtual environment for Packet Concatenation:
 
@@ -46,7 +46,7 @@ python -m venv .venv_concat
 
 Activate virtual environment (bash):
 ```
-source .venv_concat/bin/activate
+.venv_concat\Scripts\activate
 ```
 
 Install required modules
@@ -56,21 +56,49 @@ pip install -r requirements_concat.txt
 
 ### Configuration
 
-#### Specific configuration
-
 Before running the project you have to configure parameters in the `config.ini` file.
 
-`UNIT_SIZE` is length of the packet including redundancy (in second). By default 4
-`PRR` is expected time frequency after data downsamling (in Hz). By default 100. 
-`DX` is expected spatial spacing after data downsampling (in m). By default 9.078842163085938
+#### PATHs
 
-`CONCAT_TIME` length of chunks processed by Packet Concatenation after concatenation (in seconds)
+`LOCALPATH` is **absolute** PATH to the directory which will contain uncompressed `mseed` files.
+
+`NASPATH_final` is **absolute** PATHs to the NAS directory which will contain concatenated `hdf5` files.
+
+#### Data characteristics
+
+`UNIT_SIZE` is length of the packet including redundancy (in second). By default 20.
+`SPS` is expected time frequency after data downsamling (in Hz). By default 100. 
+`DX` is expected spatial spacing after data downsampling (in m). By default 9 m.
+
+#### Specific configuration
+
+`CHUNK_SIZE` length of chunks processed by Packet Concatenation after concatenation (in seconds)
 
 Ensure that you provided properly updated `config.ini` and you ready to go.
 
+#### LOG
+
+Used for configuring internal logger. Logger file is located in `LOCALPATH\log`.
+
+- `LOG_LEVEL` variable defines the log level of the file logger, and is set to `INFO` by default.
+
+- `CONSOLE_LOG` is a boolean (True/False) that defines whether console output should be logged. It is set to True by default.
+
+- `CONSOLE_LOG_LEVEL` defines the log level of the console logger. If not provided, it defaults to `INFO`.
+
+##### Telegram
+
+Enables exception logging to Telegram using TelegramBotAPI
+
+- `USE_TELEGRAM` a boolean (True/False) that enables or disables Telegram logging.
+
+- `token` a string that represents the token provided by Telegram to operate the bot.
+
+- `channel` a string that represents the Telegram channel where notifications will be sent.
+
 ## Usage <a name = "usage"></a>
 
-Script will scan `INPUT_PATH` directory (provided in `config.ini`) for subdirectories named in `uuid`  format. For each subdirectory script will require read (400) permission.
+Script will scan `LOCALPATH` directory (provided in `config.ini`) for subdirectories. Script will not write to this directories to ensure that last modification time is not changed (crussial for sorting directories, as they are names in UUID format).
 
 ### Manual use
 
@@ -81,111 +109,26 @@ If you want to run project once, you can do this using Python directly:
 *Ensure you activated virtual environment*
 
 ```
-source .venv_concat/bin/activate
+.venv_concat\Scripts\activate
 ```
 Run Packet Concatenation
 ```
 python main.py
 ```
 
-#### Using bash 
+#### Using bat 
 
-Project provide `bash` wrapper around Python project, which sets up PATH, virtual environment by itself.  
+Project provide `bat` wrapper around Python project, which sets up PATH, virtual environment by itself.  
 
-To use `bash` script, you will have to setup it: 
-In the `concat.sh` in root directory of the project change `PROJECT_PATH` to **absolute PATH of root directory of this project**.
-
-> Example:
-```
-# Changing directory to main project directory
-pushd /home/earthquake_lover/Projects/DAS-Prisma-Concat
-```
-
-Change `concat.sh` permissions to include execute permission (700):
-```
-> chmod 700 concat.sh
-``` 
-
-Run the project
-```
-> bash concat.sh
-```
+To use `bat` script, you will have to setup it: 
+In the `concat.bat` in root directory of the project change `PROJECT_PATH` to **absolute PATH of root directory of this project**.
 
 ### Scheduling
 
-You can setup scheduling using cron or any other scheduling software. This repository provide plug-and-play `systemd` service and timer.
+As the target system is Windows, the concatenation can be schedulled using a `Task Scheduler`. The service is defined in the `concat.bat` file and started at the specified time.
 
-If you want to use `systemd-timer` Ensure that your system uses systemd:
-```
-Input:
-> systemd --version
+**Make sure to complete [Using Bat](#using-bat)**. We will use `concat.bat` in your scheduling script.
 
-Output: 
-< systemd 252 (252.17-1~deb12u1)
-```
+## Linux support
 
-If your system uses you can proceed with scheduling:
-
-**Make sure to complete [Using Bash](#using-bash)**. We will use `concat.sh` in your scheduling script.
-
-In the `systemd` directory you can find every `systemd` service and timer we will use.
-
-#### Configure systemd service
-
-You have to edit `PrismaConcatDaily.service` by changing `PROJECT_PATH` to create **absolute PATH to `concat.sh`** (by default it would be the same PATH you provided in `concat.sh`).
-
-> Example:
-```
-[Service]
-ExecStart=/bin/bash /home/earthquake_lover/Projects/DAS-Prisma-Concat/concat.sh
-```
-
-#### Configure systemd timer
-
-By default systemd timer will run Packet Concatenation once per day at 3am local time. If you want to change frequency or starting time, you can change `PrismaConcatDaily.timer`
-
-> Example:
-> 
-```
-[Timer]
-OnCalendar=*-*-* 3:00:00    # This setup runs concat.sh once per day at 3am.
-Persistent=true
-```
-> Note: By default timer has property `Persistent=true` to enable the timer to start the scheduled concatenation even after complete lost power on the machine during the expected time period
-
-#### Activating timer
-
-Now you can proceed with providing `systemd` with new service and timer:
-
-Copy service and timer to `/etc/systemd/system` directory:
-```
-sudo cp systemd/PrismaConcatDaily.service /etc/systemd/system
-sudo cp systemd/PrismaConcatDaily.timer /etc/systemd/system
-```
-
-Activate timer using `systemctl`:
-```
-sudo systemctl enable PrismaConcatDaily.timer
-sudo systemctl daemon-reload
-sudo systemctl start PrismaConcatDaily.timer
-```
-
-Hooray! Timer is set up and will automatically run concatenation once a day. To check that timer was successfully activated we can run: 
-
-```
-systemctl list-timers
-```
-
-Among listed timers you would be able to see `PrismaConcatDaily.timer`, which activates `PrismaConcatDaily.service`
-## Documentation <a name = "documentation"></a>
-
-### Usage of np.memmap
-
-The `np.memmap` function is used in this project to speed up the processing of SEGY files. SEGY files are commonly used in geophysical data processing and contain seismic data in a specific format.
-
-To utilize `np.memmap`, the header map is taken from the [SEG-Y Trace Header Format](https://www.igw.uni-jena.de/igwmedia/geophysik/pdf/seg-y-trace-header-format.pdf). This header map provides information about the structure and layout of the SEGY file.
-
-Additionally, the body size of the SEGY file is calculated from the file itself. This allows for efficient memory mapping and processing of the seismic data.
-
-By using `np.memmap`, the project benefits from improved performance and reduced memory usage when working with large SEGY files.
-
+The project is not tested on Linux, but it should work. Project provides `bash` script `concat.sh` which is equivalent to `concat.bat` and systemd service and timer to schedule packet concatenation. Please refer to [Febus Concatenator](https://github.com/Antcating/DAS-Febus-Concat) for more information.
